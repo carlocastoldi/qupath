@@ -23,6 +23,10 @@
 
 package qupath.lib.gui.scripting;
 
+import groovy.lang.Binding;
+import groovy.lang.GroovyShell;
+import org.codehaus.groovy.control.CompilationFailedException;
+
 import java.awt.image.BufferedImage;
 import java.io.File;
 import java.io.IOException;
@@ -328,10 +332,10 @@ public class DefaultScriptEditor implements ScriptEditor {
 	protected Action runSelectedAction;
 	protected Action runProjectScriptAction;
 	protected Action runProjectScriptNoSaveAction;
-
 	protected Action runProjectScriptNoOpenAction;
-
 	protected Action runProjectScriptNoSaveNoOpenAction;
+	//::dip Peter Haub 01/2021 (Script Debug Test) + Carlo Castoldi 03/2024
+	protected Action runDebugScriptAction;
 	
 	protected Action killRunningScriptAction;
 
@@ -453,6 +457,8 @@ public class DefaultScriptEditor implements ScriptEditor {
 		runProjectScriptNoSaveAction = createRunProjectScriptAction("Run for project (without saving)", false, true);
 		runProjectScriptNoOpenAction = createRunProjectScriptAction("Run for project (without opening)", true, false);
 		runProjectScriptNoSaveNoOpenAction = createRunProjectScriptAction("Run for project (without saving and opening)", false, false);
+		//::dip Peter Haub 01/2021 (Script Debug Test) + Carlo Castoldi 03/2024
+		runDebugScriptAction = createRunDebugScriptAction("Debug Run (experimental)");
 		killRunningScriptAction = createKillRunningScriptAction("Kill running script");
 		
 		insertMuAction = createInsertAction(GeneralTools.SYMBOL_MU + "");
@@ -498,7 +504,6 @@ public class DefaultScriptEditor implements ScriptEditor {
 			editor.setText(fun.apply(editor.getText()));
 	}
 
-	
 	/**
 	 * Query whether a file represents a supported script.
 	 * Currently, this test looks at the file extension only.
@@ -878,6 +883,7 @@ public class DefaultScriptEditor implements ScriptEditor {
 				runProjectScriptNoSaveAction,
 				runProjectScriptNoOpenAction,
 				runProjectScriptNoSaveNoOpenAction,
+				runDebugScriptAction,  //::dip Peter Haub 01/2021 (Script Debug Test) + Carlo Castoldi 03/2024
 				null,
 				killRunningScriptAction,
 				null,
@@ -1224,6 +1230,25 @@ public class DefaultScriptEditor implements ScriptEditor {
 				Platform.runLater(() -> LogManager.removeTextAppendableFX(console));	
 		}
 	}
+
+	//::dip Peter Haub 01/2021 (Script Debug Test) + Carlo Castoldi 03/2024
+	public static Object executeDebugScript(final ScriptTab tab, final Project<BufferedImage> project, final ImageData<BufferedImage> imageData) {
+		// Set the current ImageData if we can
+		QP.setBatchProjectAndImage(project, imageData);
+
+		File file = tab.getFile();
+		Binding binding = new Binding();
+		Object result = null;
+
+		try {
+			result = new GroovyShell(binding).evaluate(file);
+		} catch (CompilationFailedException e1) {
+			e1.printStackTrace();
+		} catch (IOException e1) {
+			e1.printStackTrace();
+		}
+		return result;
+	}
 	
 	
 	
@@ -1566,7 +1591,82 @@ public class DefaultScriptEditor implements ScriptEditor {
 			action.setAccelerator(new KeyCodeCombination(KeyCode.R, KeyCombination.SHORTCUT_DOWN));
 			action.disabledProperty().bind(disableRun);
 		}
-		
+
+		return action;
+	}
+
+	//::dip Peter Haub 01/2021 (Script Debug Test) + Carlo Castoldi 03/2024
+	Action createRunDebugScriptAction(final String name) {
+		Action action = new Action(name, e -> {
+			// The following artifact works in my case (Win10, Eclipse).
+			boolean isDebug = java.lang.management.ManagementFactory.getRuntimeMXBean().
+					getInputArguments().toString().indexOf("-agentlib:jdwp") > 0;
+			//getInputArguments().toString().contains("-agentlib:jdwp");
+
+			if (!isDebug) {
+				String msg = "Application not started in Debug mode.\n*Run Debug* can only be used in Debug mode.";
+				Dialogs.showMessageDialog("Run Debug (experimental)", msg);
+				System.out.print(msg + "\n");
+				return;
+			}
+
+			String script = getCurrentText();
+
+			if (script == null || script.trim().length() == 0) {
+				logger.warn("No script selected!");
+				return;
+			}
+
+			ScriptLanguage language = getSelectedLanguage();
+			if (!(language instanceof GroovyLanguage)) {
+				String msg = "*Run Debug* can only be used on Groovy scripts.";
+				Dialogs.showMessageDialog("Run Debug (experimental)", msg);
+				return;
+			}
+
+			ScriptTab tab = getCurrentScriptTab();
+			if (!tab.fileExists() ) {
+				String msg = "Script file not existing.\nFile not saved yet.\nCreate and build the script file in a Groovy project on Eclipse/IntelliJ.";
+				Dialogs.showMessageDialog("Run Debug (experimental)", msg);
+				System.out.print(msg + "\n");
+				return;
+			}
+			if (autoClearConsole.get() && getCurrentScriptTab() != null) {
+				tab.getConsoleControl().clear();
+			}
+
+			// It's generally not a good idea to run in the Platform thread... since this will make the GUI unresponsive
+			// However, there may be times when it is useful to run a short script in the Platform thread
+			boolean runInPlatformThread = requestGuiScript(script);
+
+			// Exceute the script
+			if (runInPlatformThread) {
+				logger.info("Running script in Platform thread...");
+				try {
+					tab.setRunning(true);
+					executeDebugScript(tab, qupath.getProject(), qupath.getImageData());
+				} finally {
+					tab.setRunning(false);
+					runningTask.setValue(null);
+				}
+			} else {
+				runningTask.setValue(qupath.getThreadPoolManager().getSingleThreadExecutor(this).submit(new Runnable() {
+					@Override
+					public void run() {
+						try {
+							tab.setRunning(true);
+							executeDebugScript(tab, qupath.getProject(), qupath.getImageData());
+						} finally {
+							tab.setRunning(false);
+							Platform.runLater(() -> runningTask.setValue(null));
+						}
+					}
+				}));
+			}
+		});
+		action.setAccelerator(new KeyCodeCombination(KeyCode.D, KeyCombination.SHORTCUT_DOWN));
+		action.disabledProperty().bind(disableRun);
+
 		return action;
 	}
 	

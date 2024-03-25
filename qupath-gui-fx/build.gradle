@@ -1,6 +1,7 @@
 plugins {
   id 'qupath.common-conventions'
   id 'qupath.publishing-conventions'
+  id 'groovy'
   id 'java-library'
 
   alias(libs.plugins.javafx)
@@ -35,6 +36,8 @@ dependencies {
   implementation libs.bundles.markdown
 
   implementation libs.bundles.logviewer
+
+  implementation libs.bundles.groovy
 }
 
 javafx {
